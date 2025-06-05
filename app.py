@@ -3,8 +3,10 @@ import gradio as gr
 import requests
 import inspect
 import pandas as pd
+from langchain_core.messages import HumanMessage
 
-from Final_Assignment_Template.my_agent import agent
+from langgraph_agent import react_agent
+
 
 # (Keep Constants as is)
 # --- Constants ---
@@ -15,9 +17,15 @@ DEFAULT_API_URL = "https://agents-course-unit4-scoring.hf.space"
 class BasicAgent:
     def __init__(self):
         print("BasicAgent initialized.")
-    def __call__(self, question: str) -> str:
+    def __call__(self, question: str, file_path: str) -> str:
         print(f"Agent received question (first 50 chars): {question[:50]}...")
-        agent_response = agent.run(question)
+        config = {"configurable": {}}
+        if file_path:
+            config = {"configurable": {"file_path": file_path}}
+        messages = [HumanMessage(content=f"{question}")]
+        agent_response = react_agent.invoke({"messages": messages}, config=config, debug=True)
+        agent_response = agent_response["messages"][-1].content
+        agent_response = agent_response.strip()
         print(f"Agent returning fixed answer: {agent_response}")
         return agent_response
 
@@ -39,6 +47,7 @@ def run_and_submit_all( profile: gr.OAuthProfile | None):
     api_url = DEFAULT_API_URL
     questions_url = f"{api_url}/questions"
     submit_url = f"{api_url}/submit"
+    file_url = f"{api_url}/files"
 
     # 1. Instantiate Agent ( modify this part to create your agent)
     try:
@@ -78,11 +87,42 @@ def run_and_submit_all( profile: gr.OAuthProfile | None):
     for item in questions_data:
         task_id = item.get("task_id")
         question_text = item.get("question")
+        file_name = item.get("file_name")
+
+        file_path = None  # Ensure file_path is always defined
+
+        if file_name:
+            # Ensure the documents directory exists
+            documents_dir = "documents"
+            os.makedirs(documents_dir, exist_ok=True)
+
+            # Clear the documents directory
+            for file in os.listdir(documents_dir):
+                file_path = os.path.join(documents_dir, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+
+            # Download the file
+            file_download_url = f"{file_url}/{task_id}"
+            try:
+                file_response = requests.get(file_download_url, timeout=15)
+                file_response.raise_for_status()
+                file_path = os.path.join(documents_dir, file_name)
+                with open(file_path, "wb") as f:
+                    f.write(file_response.content)
+                print(f"File downloaded and saved to: {file_path}")
+            except requests.exceptions.RequestException as e:
+                print(f"Error downloading file for task {task_id}: {e}")
+                continue
+
+            question_text += f" (File Name: {file_name})"
+
+
         if not task_id or question_text is None:
             print(f"Skipping item with missing task_id or question: {item}")
             continue
         try:
-            submitted_answer = agent(question_text)
+            submitted_answer = agent(question_text, file_path)
             answers_payload.append({"task_id": task_id, "submitted_answer": submitted_answer})
             results_log.append({"Task ID": task_id, "Question": question_text, "Submitted Answer": submitted_answer})
         except Exception as e:
